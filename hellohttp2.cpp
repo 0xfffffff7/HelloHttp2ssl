@@ -124,7 +124,7 @@ int main(int argc, char **argv)
     // HTTP2の準備.
     //
     // プロトコルのネゴシエーションにALPNという方法を使います。
-    // 具体的にはTLSのClientHelleのALPN拡張領域ににこれから使うプロトコル名を記述します.
+    // 具体的にはTLSのClientHelloのALPN拡張領域ににこれから使うプロトコル名を記述します.
     // SPDYではNPNという方法が使われましたが、現在のHTTP2仕様ではNPNは廃止されています.
     //
     // protosには文字列ではなくバイナリで、「0x02, 'h','2'」と指定する。
@@ -161,6 +161,9 @@ int main(int argc, char **argv)
     
     //------------------------------------------------------------
     // これからHTTP2通信を開始する合図.
+    //
+    // 24オクテットのバイナリを送信します
+    // PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n
     //------------------------------------------------------------
     int r = 0;
     char buf[BUF_SIZE] = { 0 };
@@ -200,7 +203,11 @@ int main(int argc, char **argv)
     //   1-3バイト目  payloadの長さ。長さにヘッダの9バイトは含まれない。.
     //   4バイト目　フレームのタイプ.
     //   5バイト目　フラグ.
-    //   6-9バイト目　ストリームID.
+    //   6-9バイト目　ストリームID.(最初の1bitは予約で必ず0)
+    //
+    //  |Length(24bit)|Type(8bit)|Flags(8bit)|Reserve(1bit)|Stream Identifier(31bit)|
+    //  |Frame Payload(Lengthバイト分)|
+    //
     //
     // [フレームのタイプ]
     //
@@ -214,6 +221,12 @@ int main(int argc, char **argv)
     // GOAWAY(0x07)  接続の終了を通知する
     // WINDOW_UPDATE(0x08)   フロー制御ウィンドウを更新する
     // CONTINUATION(0x09)  HEADERSフレームやPUSH_PROMISEフレームの続きのデータを転送する
+    //
+    // それぞれのリクエストやレスポンスにはストリームIDが付与される.
+    // クライアントから発行されるストリームIDは奇数.
+    // サーバーから発行されるストリームIDは偶数.
+    // ストリームには優先順位が付けられています.
+    // 今回はストリームID「1」だけを使用します.
     //------------------------------------------------------------
     
     
@@ -229,6 +242,12 @@ int main(int argc, char **argv)
     // Client -> Server  ACK
     // Client <- Server  ACK
     //
+    // Client -> Server  HEADERS_FRAME (GETなど)
+    // Client <- Server  HEADERS_FRAME (ステータスコードなど)
+    // Client <- Server  DATA_FRAME (Body)
+    // 
+    // Client -> Server  GOAWAY_FRAME (送信終了)
+    //
     //------------------------------------------------------------
     
     
@@ -238,7 +257,19 @@ int main(int argc, char **argv)
     // フレームタイプは「0x04」
     // 全てデフォルト値を採用するためpayloadは空です。
     // SettingフレームのストリームIDは0です.
-    //------------------------------------------------------------
+    //
+    // 今回は空ですがSettingフレームのpayloadは次のフォーマットです.
+    //
+    // |Identifer(16bit)|Value(32bit)|
+    // 上記を設定値の数だけ連結させ、最終的な長さをヘッダフレームのLengthに記述します.
+    //
+    // Identiferは次のものが定義されています。
+    // SETTINGS_HEADER_TABLE_SIZE (0x1)  初期値は 4,096 オクテット
+    // SETTINGS_ENABLE_PUSH (0x2)  初期値は1
+    // SETTINGS_MAX_CONCURRENT_STREAMS (0x3)  初期状態では無制限
+    // SETTINGS_INITIAL_WINDOW_SIZE (0x4)   初期値は 2^16-1 (65,535)
+    // SETTINGS_MAX_FRAME_SIZE (0x5)    初期値は 2^24-1 (16777215)
+    // SETTINGS_MAX_HEADER_LIST_SIZE (0x6)   初期値は無制限
     const unsigned char settingframe[BINARY_FRAME_LENGTH] = { 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00};
     
     while (1){
@@ -321,6 +352,7 @@ int main(int argc, char **argv)
         if (b) break;
     }
     
+    // サーバーからのACKの受信は下でやります..
     
     //------------------------------------------------------------
     // HEADERSフレームの送信.
@@ -350,9 +382,9 @@ int main(int argc, char **argv)
     // 一つのヘッダフィールドの記述例
     //
     // |0|0|0|0|      0|   // 最初の4ビットは圧縮に関する情報、次の4ビットはヘッダテーブルのインデクス.(今回は圧縮しないのですべて0)
-    // |0|            7|   // 最初の1ビットは圧縮に関する情報(今回は0)、次はフィールドの長さ
+    // |0|            7|   // 最初の1bitは圧縮に関する情報(今回は0)、次の7bitはフィールドの長さ
     // |:method|           // フィールドをそのままASCIIのオクテットで書く。
-    // |0|            3|   // 最初の1ビットは圧縮に関する情報(今回は0)、次はフィールドの長さ
+    // |0|            3|   // 最初の1bitは圧縮に関する情報(今回は0)、次の7bitはフィールドの長さ
     // |GET|               // 値をそのままASCIIのオクテットで書く。
     //
     // 上記が一つのヘッダフィールドの記述例で、ヘッダーフィールドの数だけこれを繰り返す.
@@ -627,4 +659,3 @@ char* to_framedata3byte(char *p, int &n){
     p += 3;
     return p;
 }
-
