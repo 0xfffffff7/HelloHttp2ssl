@@ -4,6 +4,8 @@ HelloHttp2 is main method only program for C++.
   
 # Dependency  
   
+openssl >= 1.0.2  
+  
 libcrypto.a  
 libssl.a  
 libstdc++  
